@@ -18,6 +18,7 @@ let s:fuzzy_prev_window = -1
 let s:fuzzy_prev_window_height = -1
 let s:fuzzy_bufnr = -1
 let s:fuzzy_source = {}
+let s:fuzzy_lines = 40
 
 function! s:fuzzy_err_noexec()
   throw "Fuzzy: no search executable was found. " .
@@ -78,6 +79,8 @@ endif
 
 command! -nargs=? FuzzyGrep   call s:fuzzy_grep(<q-args>)
 command! -nargs=? FuzzyOpen   call s:fuzzy_open(<q-args>)
+command!          FuzzyBlines call s:fuzzy_blines()
+command!          FuzzyFiles  call s:fuzzy_files()
 command!          FuzzyKill   call s:fuzzy_kill()
 
 autocmd FileType fuzzy tnoremap <buffer> <Esc> <C-\><C-n>:FuzzyKill<CR>
@@ -85,6 +88,36 @@ autocmd FileType fuzzy tnoremap <buffer> <Esc> <C-\><C-n>:FuzzyKill<CR>
 function! s:fuzzy_kill()
   echo
   call jobstop(s:fuzzy_job_id)
+endfunction
+
+function! s:buffer_lines()
+  return map(getline(1, "$"),
+    \ 'printf("%4d %s", v:key + 1, v:val)')
+endfunction
+
+function! s:fuzzy_blines()
+  let contents = s:buffer_lines()
+  let opts = { 'lines': s:fuzzy_lines, 'statusfmt': 'FuzzyBlines (%d results)' }
+  function! opts.handler(result) abort
+    let parts = split(join(a:result), ' ')
+    let lnum = parts[0]
+
+    return { 'lnum': lnum }
+  endfunction
+
+  return s:fuzzy(contents, opts)
+endfunction
+
+function! s:fuzzy_files()
+  let contents = ''
+  let opts = { 'lines': s:fuzzy_lines, 'statusfmt': 'FuzzyFiles (%d results)', 'cmd': 'python ~/dotfiles/find.py | fzy'}
+  function! opts.handler(result) abort
+    let parts = split(join(a:result), '  ')
+    let name = parts[1]
+    return { 'name': fnameescape(name) }
+  endfunction
+
+  return s:fuzzy(contents, opts)
 endfunction
 
 function! s:fuzzy_grep(str) abort
@@ -95,8 +128,7 @@ function! s:fuzzy_grep(str) abort
     return
   endtry
 
-  let opts = { 'lines': 12, 'statusfmt': 'FuzzyGrep (%d results)' }
-
+  let opts = { 'lines': s:fuzzy_lines, 'statusfmt': 'FuzzyBlines (%d results)' }
   function! opts.handler(result) abort
     let parts = split(join(a:result), ':')
     let name = parts[0]
@@ -135,7 +167,7 @@ function! s:fuzzy_open(root) abort
   " Put it all together.
   let result = bufs + files
 
-  let opts = { 'lines': 12, 'statusfmt': 'FuzzyOpen (%d files)' }
+  let opts = { 'lines': s:fuzzy_lines, 'statusfmt': 'FuzzyOpen (%d files)' }
   function! opts.handler(result)
     return { 'name': join(a:result) }
   endfunction
@@ -144,7 +176,6 @@ function! s:fuzzy_open(root) abort
 endfunction
 
 function! s:fuzzy(choices, opts) abort
-  let inputs = tempname()
   let outputs = tempname()
 
   if !executable('fzy')
@@ -155,9 +186,20 @@ function! s:fuzzy(choices, opts) abort
   " Clear the command line.
   echo
 
-  call writefile(a:choices, inputs)
+  let cmd = "fzy"
+  if has_key(a:opts, 'cmd')
+    let cmd = a:opts.cmd
+  endif
 
-  let command = "fzy -l " . a:opts.lines . " > " . outputs . " < " . inputs
+  let command = cmd . " -l " . a:opts.lines . " > " . outputs
+
+  let type = type(a:choices)
+  if type == 3
+    let inputs = tempname()
+    call writefile(a:choices, inputs)
+    let command = command . " < " . inputs
+  endif
+
   let opts = { 'outputs': outputs, 'handler': a:opts.handler }
 
   function! opts.on_exit(id, code) abort
@@ -175,7 +217,9 @@ function! s:fuzzy(choices, opts) abort
     let result = readfile(self.outputs)
     if !empty(result)
       let file = self.handler(result)
-      silent execute g:fuzzy_opencmd fnameescape(file.name)
+      if has_key(file, 'name')
+        silent execute g:fuzzy_opencmd fnameescape(file.name)
+      endif
       if has_key(file, 'lnum')
         silent execute file.lnum
         normal! zz
